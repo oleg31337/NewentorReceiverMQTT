@@ -11,24 +11,26 @@
 #include <LittleFS.h>             //LittleFS support (replaces SPIFFS)
 #include <ESP8266WiFi.h>          //esp8266 wifi support required for mqtt client
 #include <PubSubClient.h>         //mqtt client
-#include <DNSServer.h>            //mdns server - required for wifiManager
-#include <ESP8266mDNS.h>
-#include <ArduinoOTA.h>
+#include <DNSServer.h>            //dns server - required for wifiManager captive portal
+#include <ESP8266mDNS.h>          //mdns server - for web interface
+#include <ArduinoOTA.h>           //ota upgrades support (flash over the wifi)
 #include <ESP8266WebServer.h>     //web server - required for wifiManager
 #include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager
 #include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
 
-ESP8266WebServer webserver(80); //web server
-WiFiClient espClient;
+WiFiClient espClient; //wifi client for mqtt
 PubSubClient mqtt_client(espClient); //mqtt client
+ESP8266WebServer webserver(80); //web server on port 80
 
 bool datagram[DATAGRAM]; //datagram array to receive weather sensor data
 
 //define your default values here, if there are different values in config.json, they are overwritten.
-char mqtt_server[64] = "";
+char mqtt_server[65] = "";
 char mqtt_port[6] = "1883";
-char mqtt_topic[64] = "";
-char admin_pass[23] = "p4ssw0rd"; //defaul admin password
+char mqtt_topic[65] = ""; //default value will be defined later
+char admin_username[6] = "admin"; //default admin username
+char admin_pass[23] = "p4ssw0rd"; //default admin password for web interface and OTA
+char hostname[33] = ""; //default mDNS hostname will be defined later
 
 bool shouldSaveConfig = false;//flag for saving data
 bool no_config_file = false; //flag for not finding config file
@@ -50,6 +52,7 @@ void saveConfigFile() {
   json["mqtt_port"] = mqtt_port;
   json["mqtt_topic"] = mqtt_topic;
   json["admin_pass"] = admin_pass;
+  json["hostname"] = hostname;
   File configFile = LittleFS.open("/config.json", "w");
   if (!configFile) {
     #if DEBUG
@@ -65,9 +68,8 @@ void saveConfigFile() {
   serializeJson(json, Serial);
   Serial.println();
   #endif
-  delay(100);
   configFile.close();
-  //end save
+  delay(100);
 }
 
 void loadConfigFile() {
@@ -95,10 +97,12 @@ void loadConfigFile() {
         strcpy(mqtt_port, json["mqtt_port"]);
         strcpy(mqtt_topic, json["mqtt_topic"]);
         strcpy(admin_pass, json["admin_pass"]);
+        strcpy(hostname, json["hostname"]);
       } else {
         #if DEBUG
         Serial.println(error.c_str());
         Serial.println("failed to load json config");
+        no_config_file = true; //set the global flag that config file not found or corrupt and needs to be re-written
         #endif
       }
       configFile.close();
@@ -116,17 +120,15 @@ double convertFtoC(double f) { return round(((f-32.0)*0.55555)*10)/10.0; } //con
 void mqtt_connect() {  //mqtt server connection function
   int failedattempts=0;
   while (!mqtt_client.connected()) { // Loop until we're reconnected
-    char clientId[20];// Create a client ID from Chip ID
-    sprintf(clientId,"Weather433-%08x",ESP.getChipId());
     #if DEBUG
-    Serial.print("Attempting MQTT connection with ClientID: "); Serial.println(clientId);
+    Serial.print("Attempting MQTT connection with ClientID: "); Serial.println(hostname);
     #endif
     // Attempt to connect
-    if (mqtt_client.connect(clientId)) {
+    if (mqtt_client.connect(hostname)) { //connect to MQTT broker using hostname
       #if DEBUG
       Serial.println("MQTT connected");
       #endif
-    } else if (failedattempts<5) {
+    } else if (failedattempts<100) {
       #if DEBUG
       Serial.print("Failed, rc=");
       Serial.println(mqtt_client.state());
@@ -139,12 +141,15 @@ void mqtt_connect() {  //mqtt server connection function
       Serial.print("MQTT server is unreachable, restarting...");
       #endif
       delay(100);
-      ESP.reset(); // reset
+      ESP.reset(); // reset after 100 unsuccessful attempts to connect
     }
   }
 }
 
 void send_datagram(){
+  #if DEBUG || DEBUG433
+  digitalWrite(LEDPIN,LOW); //DEBUG: turn on led until datagram is sent to mqtt
+  #endif
   char msg[128]=""; //mqtt message json
   static char oldmsg[128]="z"; //previous mqtt message json
   byte h=0;
@@ -215,7 +220,11 @@ void send_datagram(){
     Serial.println ("Same datagram received, skipping.");
     #endif
   }
-  strcpy(oldmsg,msg);
+  strcpy(oldmsg,msg); // copy message to old message
+
+  #if DEBUG || DEBUG433
+  digitalWrite(LEDPIN,HIGH); //DEBUG: turn off led when datagram is sent
+  #endif
 }
 
 IRAM_ATTR void isrhandler() {
@@ -298,6 +307,22 @@ IRAM_ATTR void isrhandler() {
   }
 }
 
+void handleWebNotFound() {
+  String uri = ESP8266WebServer::urlDecode(webserver.uri());
+  String message = "File Not Found\n\n";
+  message += "URI: ";
+  message += uri;
+  webserver.send(404, "text/plain", message);
+}
+
+void handleWebRoot() {
+  char response[312];
+  sprintf(response, "<html><head></head><body> \
+  MQTT server: %s</br>MQTT port: %s</br>MQTT topic: %s</br>Admin password: %s</br>Hostname: %s \
+  </body></html>",mqtt_server,mqtt_port,mqtt_topic,admin_pass,hostname);
+  webserver.send(200, "text/html", response);
+}
+
 void setup() {
   #if DEBUG || DEBUG433
   Serial.begin(1000000); //using maxumum available speed of uart to reduce delay in the interrupt routines.
@@ -310,6 +335,8 @@ void setup() {
   #if DEBUG
   digitalWrite(LEDPIN,LOW); //DEBUG: turn on led until wifi connection is established
   #endif
+  //Define default hostname
+  sprintf(hostname,"Weather433-%08x",ESP.getChipId());
   //Define default topic name to include device name
   sprintf(mqtt_topic,"Weather433-%08x",ESP.getChipId());
   //read configuration from FS json
@@ -336,15 +363,20 @@ void setup() {
   }
   //end read config file
 
+  //WiFiManager initialization
   // The extra parameters to be configured (can be either global or just in the setup)
   // After connecting, parameter.getValue() will get you the configured value
   // id/name placeholder/prompt default length  
-  WiFiManagerParameter custom_admin_pass("password", "Admin password", admin_pass, 23);
-  WiFiManagerParameter custom_mqtt_server("server", "MQTT server IP address", mqtt_server, 63);
+  WiFiManagerParameter custom_admin_pass("password", "Admin password", admin_pass, 24);
+  WiFiManagerParameter custom_admin_pass_text("<p>Admin password:</p>");
+  WiFiManagerParameter custom_hostname("hostname", "Hostname", hostname, 64);
+  WiFiManagerParameter custom_hostname_text("<p>Hostname:</p>");
+  WiFiManagerParameter custom_mqtt_server("server", "MQTT server IP address", mqtt_server, 64);
+  WiFiManagerParameter custom_mqtt_server_text("<p>MQTT Server IP address:</p>");
   WiFiManagerParameter custom_mqtt_port("port", "MQTT port", mqtt_port, 5);
-  WiFiManagerParameter custom_mqtt_topic("topic", "Sensor name", mqtt_topic, 63);
-  
-  //WiFiManager
+  WiFiManagerParameter custom_mqtt_port_text("<p>MQTT port:</p>");
+  WiFiManagerParameter custom_mqtt_topic("topic", "Sensor name", mqtt_topic, 64);
+  WiFiManagerParameter custom_mqtt_topic_text("<p>MQTT topic:</p>");
   //Local intialization. Once its business is done, there is no need to keep it around
   WiFiManager wifiManager;
   //set various settings for wifi manager
@@ -356,18 +388,21 @@ void setup() {
   wifiManager.setMinimumSignalQuality(5); // set minimum wifi quality to 5%
   wifiManager.setRemoveDuplicateAPs(true); //remove duplicate ssid's from the list
   wifiManager.setTimeout(600); //set wifi manager timeout to 10 minutes
-  //set config save notify callback
-  wifiManager.setSaveConfigCallback(saveConfigCallback);
-  if (no_config_file) {
-    wifiManager.resetSettings(); //reset wifi settings if no config file was found.
-  }
+  wifiManager.setSaveConfigCallback(saveConfigCallback); //set config save notify callback
+  if (no_config_file) { wifiManager.resetSettings(); } //reset wifi settings if no config file was found.
   //add all custom parameters
-  wifiManager.addParameter(&custom_mqtt_server);
-  wifiManager.addParameter(&custom_mqtt_port);
-  wifiManager.addParameter(&custom_mqtt_topic);
+  wifiManager.addParameter(&custom_hostname_text);
+  wifiManager.addParameter(&custom_hostname);
+  wifiManager.addParameter(&custom_admin_pass_text);
   wifiManager.addParameter(&custom_admin_pass);
-
-  //reset wifi manager settings if sensor reset button pressed while booting
+  wifiManager.addParameter(&custom_mqtt_server_text);
+  wifiManager.addParameter(&custom_mqtt_server);
+  wifiManager.addParameter(&custom_mqtt_port_text);
+  wifiManager.addParameter(&custom_mqtt_port);
+  wifiManager.addParameter(&custom_mqtt_topic_text);
+  wifiManager.addParameter(&custom_mqtt_topic);
+  
+  //reset wifi manager settings if settings reset button pressed while booting
   if (digitalRead(RESETPIN)==0){
     #if DEBUG
     Serial.println("Config button pressed, starting on-demand autoconnect");
@@ -375,12 +410,13 @@ void setup() {
     //wifiManager.resetSettings();
     while (digitalRead(RESETPIN)==0) {} //loop until sensor reset button is released, then reset.
     //ESP.eraseConfig();
-    if (wifiManager.startConfigPortal(mqtt_topic, "p4ssw0rd")) { //start on-demand config portal
-      if (shouldSaveConfig) {
-        saveConfigFile();
-      }
-      delay(100);
+    if (wifiManager.startConfigPortal(mqtt_topic, admin_pass)) { //start on-demand config portal
+      if (shouldSaveConfig) { saveConfigFile(); } //save config if required
     }
+    #if DEBUG
+    Serial.println("Configuration complete. Restarting with new parameters.");
+    #endif
+    delay(100);
     ESP.reset(); //reset after manual config portal is exited. do not restart if exit is pressed.
   }
   //fetches ssid and pass and tries to connect
@@ -389,9 +425,9 @@ void setup() {
   #if DEBUG
   Serial.println("Starting wifiManager");
   #endif
-  if (!wifiManager.autoConnect(mqtt_topic, "p4ssw0rd")) {
+  if (!wifiManager.autoConnect(mqtt_topic, admin_pass)) {
     #if DEBUG
-    Serial.println("Failed to connect and hit timeout");
+    Serial.println("Failed to connect and hit timeout. Restarting.");
     #endif
     delay(100);
     ESP.reset(); //reset and try again
@@ -402,11 +438,12 @@ void setup() {
   Serial.println("Connected to Wifi.");
   digitalWrite(LEDPIN,HIGH); //turn off led when connection is established
   #endif
-  //read parameters from saved/updated config
+  //read back parameters from saved/updated config
   strcpy(mqtt_server, custom_mqtt_server.getValue());
   strcpy(mqtt_port, custom_mqtt_port.getValue());
   strcpy(mqtt_topic, custom_mqtt_topic.getValue());
-
+  strcpy(admin_pass, custom_admin_pass.getValue());
+  strcpy(hostname, custom_hostname.getValue());
   //save the custom parameters to LittleFS
   if (shouldSaveConfig) {
     saveConfigFile();
@@ -423,14 +460,16 @@ void setup() {
   #if DEBUG
   Serial.println("Starting OTA server");
   #endif
-  ArduinoOTA.begin();
+  ArduinoOTA.setHostname(hostname); //set OTA host name
+  ArduinoOTA.begin(); // begin OTA routines
 
   webserver.on("/", []() {
-    if (!webserver.authenticate("admin", admin_pass)) {
-      return webserver.requestAuthentication();
+    if (!webserver.authenticate(admin_username, admin_pass)) { //check for authentication
+      return webserver.requestAuthentication(); // request authentication
     }
-    webserver.send(200, "text/plain", "Login OK");
+    handleWebRoot(); // response with index page
   });
+  webserver.onNotFound(handleWebNotFound);
   #if DEBUG
   Serial.println("Starting Web server");
   #endif
@@ -443,7 +482,7 @@ void setup() {
   #if DEBUG
   Serial.println("Starting RF433 reception");
   #endif
-  attachInterrupt(digitalPinToInterrupt(DATAPIN), isrhandler, CHANGE); // attach listening interrupt and start receiving
+  attachInterrupt(digitalPinToInterrupt(DATAPIN), isrhandler, CHANGE); // attach RF listening interrupt and start receiving
 }
 
 void loop() {
