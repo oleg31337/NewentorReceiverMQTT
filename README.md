@@ -5,7 +5,7 @@ This is the PlatformIO project but code base is Arduino compatible.
 [Newentor Q5 weather station on AliExpress](https://www.aliexpress.com/item/1005002533165074.html)
 - ESP8266 Wemos D1 mini or compatible
 - RF-433MHz receiver. Data out connected to D1 input of ESP8266
-- Button connected to D2 input of ESP8266 for settings reset during boot and forcing the Autoconnect configuration interface
+- Button connected to D7 input of ESP8266 for settings reset during boot and forcing the Autoconnect configuration interface
 ## 3rd party software Libraries
 [PubSubClient](https://github.com/knolleary/pubsubclient) - MQTT client library
 [ArduinoJson](https://github.com/bblanchon/ArduinoJson) - JSON support
