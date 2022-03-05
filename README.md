@@ -6,6 +6,10 @@ This is the PlatformIO project but code base is Arduino compatible.
 - ESP8266 Wemos D1 mini or compatible
 - RF-433MHz receiver. Data out connected to D1 input of ESP8266
 - Button connected to D2 input of ESP8266 for settings reset during boot and forcing the Autoconnect configuration interface
+## 3rd party software Libraries
+[PubSubClient](https://github.com/knolleary/pubsubclient) - MQTT client library
+[ArduinoJson](https://github.com/bblanchon/ArduinoJson) - JSON support
+[WiFiManager](https://github.com/tzapu/WiFiManager) - Configuration portal
 ## RF Protocol
 #### Sensors message format is 40 bit with ASK+PWM modulation:
 - Preamble is 3-4 short impulses followed by long pause of about 8ms, then 40 bits are transmitted
@@ -30,3 +34,4 @@ This is the PlatformIO project but code base is Arduino compatible.
 - ArduinoOTA - allows code re-flashing over Wi-Fi
 - PubSubClient - sends the received sensor data to configured MQTT broker
 - Messages are filtered to prevent repeating 6 times, only one message is sent if it is the same message as before
+- Admin username is "admin" and default password is "p4ssw0rd". Password can be changed in both: wifiAP mode and web interface.
