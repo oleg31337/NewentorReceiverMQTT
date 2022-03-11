@@ -1,11 +1,21 @@
 #include <Arduino.h>
-//times are in microseconds
-#define DATAPIN  D1  // RF input pin. should be able to attach interrupt. internal pin 4
+
+//Defining the time intervals to decode the signal. Times are in microseconds
+#define NEWDATA_MIN 7000 //preamble min
+#define NEWDATA_MAX 9000 //preamble max
+#define ONE_MIN 3200 // 1 min
+#define ONE_MAX 4900 // 1 max
+#define ZERO_MIN 1200 // 0 min
+#define ZERO_MAX 2400 // 0 max
+#define PULSE_MIN 400 // pulse min
+#define PULSE_MAX 900 // pulse max
+
+#define DATAPIN D1  // RF input pin. should be able to attach interrupt. internal pin 4
 #define DATAGRAM 40  // total number of bits to receive
 #define LEDPIN D4     //embedded led internal pin 2. pulled up internally
 #define RESETPIN D7  //reset settings button. internal pin 13
 
-//define DEBUG true      //enable debugging
+#define DEBUG true      //enable debugging
 //#define DEBUG433 true   //enable debugging for RF signal
 
 #include <LittleFS.h>             //LittleFS support (replaces SPIFFS)
@@ -195,7 +205,7 @@ void sendDatagram(){
   if (strcmp(msg,oldmsg)!=0 || lastmsgtime>6000){ //not the same message as before and not received within 6 sec
     #if DEBUG
     Serial.print("MQTT topic: "); Serial.println(mqtt_topic);
-    Serial.print("Publish message: "); Serial.println(msg);
+    Serial.print("Publishing message: "); Serial.println(msg);
     #endif
     if (!mqtt_client.publish(mqtt_topic, msg, false)){
       #if DEBUG
@@ -232,14 +242,14 @@ IRAM_ATTR void interruptHandler() {
   
   if (state){//rising edge
     if (receiving){
-      if (duration>7000 && duration<9000){ // potentially new data during receiving datagram
+      if (duration>NEWDATA_MIN && duration<NEWDATA_MAX){ // potentially new data during receiving datagram
         #if DEBUG433
         Serial.print("new_new_data ");
         Serial.println(duration);
         #endif
         index=0; //reset index as it seem as a new packet
       }
-      else if (duration>3200 && duration<4900){ //received 1
+      else if (duration>ONE_MIN && duration<ONE_MAX){ //received 1
         #if DEBUG433
         Serial.print("1 ");
         Serial.println(duration);
@@ -247,7 +257,7 @@ IRAM_ATTR void interruptHandler() {
         datagram[index]=1;
         index++;
       }
-      else if (duration>1300 && duration<2300){ //received 0
+      else if (duration>ZERO_MIN && duration<ZERO_MAX){ //received 0
         #if DEBUG433
         Serial.print("0 ");
         Serial.println(duration);
@@ -265,7 +275,7 @@ IRAM_ATTR void interruptHandler() {
       }
     }
     else { //not receiving yet
-      if (duration>7000 && duration<9000){ //new datagram preambula pause ~8ms
+      if (duration>NEWDATA_MIN && duration<NEWDATA_MAX){ //new datagram preambula pause ~8ms
         #if DEBUG433
         Serial.print("new_data ");
         Serial.println(duration);
@@ -276,9 +286,9 @@ IRAM_ATTR void interruptHandler() {
     }
   }
   else { //falling edge
-    if (receiving && (duration<400 || duration>900)){ //out of sync
+    if (receiving && (duration<PULSE_MIN || duration>PULSE_MAX)){ //out of sync
       #if DEBUG433
-      Serial.print("error_sep ");
+      Serial.print("error_pulse ");
       Serial.println(duration);
       #endif
       index=0;
@@ -313,15 +323,15 @@ void wifiManagerInit() {
   // After connecting, parameter.getValue() will get you the configured value
   // id/name placeholder/prompt default length  
   WiFiManagerParameter custom_admin_pass("password", "Admin password", admin_pass, 24);
-  WiFiManagerParameter custom_admin_pass_text("Admin password:");
+  WiFiManagerParameter custom_admin_pass_text("<br>Admin password:");
   WiFiManagerParameter custom_hostname("hostname", "mDNS hostname", hostname, 64);
-  WiFiManagerParameter custom_hostname_text("Hostname:");
+  WiFiManagerParameter custom_hostname_text("<br>Hostname:");
   WiFiManagerParameter custom_mqtt_server("server", "MQTT server IP address", mqtt_server, 64);
-  WiFiManagerParameter custom_mqtt_server_text("MQTT server IP address:");
+  WiFiManagerParameter custom_mqtt_server_text("<br>MQTT server IP address:");
   WiFiManagerParameter custom_mqtt_port("port", "MQTT port", mqtt_port, 5);
-  WiFiManagerParameter custom_mqtt_port_text("MQTT port:");
+  WiFiManagerParameter custom_mqtt_port_text("<br>MQTT port:");
   WiFiManagerParameter custom_mqtt_topic("topic", "Sensor name", mqtt_topic, 64);
-  WiFiManagerParameter custom_mqtt_topic_text("MQTT topic:");
+  WiFiManagerParameter custom_mqtt_topic_text("<br>MQTT topic:");
   //Local intialization. Once its business is done, there is no need to keep it around
   WiFiManager wifiManager;
   //set various settings for wifi manager
@@ -414,6 +424,15 @@ void handleWebRoot() {
   #if DEBUG
   Serial.println("Web GET request /");
   #endif
+  webserver.send(200, "text/html", F("<html><h2>NewentorReceiver433</h2>\
+  <p><input type=\"button\" value=\"Configuration\" onclick=\"window.location.replace('/config')\"></p>\
+  </html>"));
+}
+
+void handleWebConfig() {
+  #if DEBUG
+  Serial.println("Web GET request /configure");
+  #endif
   if (!webserver.authenticate(admin_username, admin_pass)) { //check for authentication
     return webserver.requestAuthentication(); // request authentication
   }
@@ -429,6 +448,19 @@ void handleWebRoot() {
   </table></form></html>",hostname,admin_pass,mqtt_server,mqtt_port,mqtt_topic);
   webserver.send(200, "text/html", response);
 }
+
+/* void handleWebGetparams() {
+  #if DEBUG
+  Serial.println("Web GET request /getparams");
+  #endif
+  if (!webserver.authenticate(admin_username, admin_pass)) { //check for authentication
+    return webserver.requestAuthentication(); // request authentication
+  }
+  char response[267];
+  sprintf(response, "{\"hostname\":\"%s\",\"admin_pass\":\"%s\",\"mqtt_server\":\"%s\",\"mqtt_port\":\"%s\";\"mqtt_topic\":\"%s\"}",
+  hostname,admin_pass,mqtt_server,mqtt_port,mqtt_topic);
+  webserver.send(200, "application/json", response);
+} */
 
 void handleWebSave() {
   #if DEBUG
@@ -536,6 +568,8 @@ void setup() {
 
   /////////////////////////////// Web server
   webserver.on("/", HTTP_GET, handleWebRoot);
+  //webserver.on("/getparams", HTTP_GET, handleWebGetparams);
+  webserver.on("/config", HTTP_GET, handleWebConfig);
   webserver.on("/save", HTTP_POST, handleWebSave);
   webserver.onNotFound(handleWebNotFound);
   #if DEBUG
