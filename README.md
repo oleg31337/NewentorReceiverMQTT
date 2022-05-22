@@ -19,14 +19,14 @@ This is the PlatformIO project but code base is Arduino compatible.
 - Bit 0 length is around 1800 microseconds
 - Bit 1 length is around 4000 microseconds
 #### Message contains:
-    Address | -?- |B|??|Temperature |Humidity|??|Ch
-    00011101 01111 0 01 011000100111 00111000 00 01
+    Address |CRC4|?|B|??|Temperature |Humidity|??|Ch
+    00011101 0111 1 0 01 011000100111 00111000 00 01
 - Random address of 8 bits which is renewed on battery replacement.
+- CRC4 - I would never figure this out myself. Function borrowed from rtl_433 project https://github.com/merbanan/rtl_433 InFactory sensor plugin.
 - Channel (Ch), 2 bits
 - 12 bits of temperature are coded in Fahrenheit degrees multiplied by 10 and added constant of 900 to eliminate negative values
 - Humidity is encoded as two 4-bit BCD digits.
 - Battery status (B) is 1 bit, meaning if battery needs replacement or not
-- There are 9 bits that are still unknown, can be either rolling code or some sort of weird checksum or reserved for future use. I couldn't decode that, so any help would be greatly appreciated!
 ## Software features
 - WiFiManager - the library that allows configuration of Wifi and other settings on first start or if settings reset button was pressed during power-on
 - mDNS - allows the sensor to appear in your network as web server with name set in Autoconnect interface

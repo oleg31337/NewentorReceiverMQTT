@@ -1,3 +1,5 @@
+// CRC check is copied from rtl_433 project https://github.com/merbanan/rtl_433 InFactory sensor plugin.
+
 #include <Arduino.h>
 
 //Defining the time intervals to decode the signal. Times are in microseconds
@@ -44,6 +46,42 @@ char hostname[33] = "NewentorReceiver433"; //default mDNS hostname
 
 bool shouldSaveConfig = false;//flag for saving data
 bool no_config_file = false; //flag for not finding config file
+
+double convertFtoC(double f) { //convert F to C and round to 1
+  return round(((f-32.0)*0.55555)*10)/10.0;
+}
+
+uint8_t crc4(uint8_t const message[], unsigned nBytes, uint8_t polynomial, uint8_t init) // copied from rtl_433 project
+{
+    unsigned remainder = init << 4; // LSBs are unused
+    unsigned poly = polynomial << 4;
+    unsigned bit;
+
+    while (nBytes--) {
+        remainder ^= *message++;
+        for (bit = 0; bit < 8; bit++) {
+            if (remainder & 0x80) {
+                remainder = (remainder << 1) ^ poly;
+            } else {
+                remainder = (remainder << 1);
+            }
+        }
+    }
+    return remainder >> 4 & 0x0f; // discard the LSBs
+}
+
+static int infactory_crc_check(uint8_t *b) // copied from rtl_433 project
+{
+    uint8_t msg_crc, crc, msg[5];
+    memcpy(msg, b, 5);
+    msg_crc = msg[1] >> 4;
+    // for CRC computation, channel bits are at the CRC position(!)
+    msg[1] = (msg[1] & 0x0F) | (msg[4] & 0x0F) << 4;
+    // crc4() only works with full bytes
+    crc = crc4(msg, 4, 0x13, 0); // Koopmann 0x9, CCITT-4; FP-4; ITU-T G.704
+    crc ^= msg[4] >> 4; // last nibble is only XORed
+    return (crc == msg_crc);
+}
 
 //callback notifying us of the need to save config
 void saveConfigCallback () {
@@ -124,8 +162,6 @@ void loadConfigFile() {
   }
 }
 
-double convertFtoC(double f) { return round(((f-32.0)*0.55555)*10)/10.0; } //convert F to C and round to 1
-
 void mqttConnect() {  //mqtt server connection function. Will re-try every 5 seconds
   static unsigned long lastconnectattempt=0; // last time tried to connect
   unsigned long timesincelastattempt=millis()-lastconnectattempt; //time since last attempt
@@ -155,52 +191,55 @@ void sendDatagram(){
   #endif
   char msg[128]=""; //mqtt message json
   static char oldmsg[128]="z"; //previous mqtt message json
-  byte h=0;
-  unsigned int t=0;
-  byte addr=0;
-  static unsigned long lasttime=0; //last millis time message received
-  long lastmsgtime=millis()-lasttime; //time in ms since last message
+  static uint32_t lasttime=0; //last millis time message received
+  uint32_t lastmsgtime=millis()-lasttime; //time in ms since last message
   lasttime=millis();
-  
-  for (int i=0;i<DATAGRAM;i++){
+  uint8_t databytes[DATAGRAM/8]; //byte array representation of binary datagram
+  for (uint8_t i=0;i<DATAGRAM;i++){
+    bitWrite(databytes[i/8],7-(i%8),datagram[i]); //populate bytes array
     #if DEBUG433
     Serial.print(datagram[i]);
     Serial.print(" ");
     #endif
-    if (i>=0 && i<8){
-      bitWrite(addr,7-(i),datagram[i]);
-    }
-    if (i>15 && i<28){
-      bitWrite(t,11-(i-16),datagram[i]);
-    }
-    if (i>27 && i<36){
-      bitWrite(h,7-(i-28),datagram[i]);
-    }
   }
-  double tempF=(t-900)/10.0;
+  int battery_low = (databytes[1] >> 2) & 1; // 0=battery ok, 1=battery low
+  int temp_raw    = (databytes[2] << 4) | (databytes[3] >> 4); // encoded temperature in F
+  int humidity    = (databytes[3] & 0x0F) * 10 + (databytes[4] >> 4); // BCD, 'A0'=100%rH
+  int channel     = databytes[4] & 0x03; // sensor channel 1-3
+  double tempF=(temp_raw-900)/10.0; // calculate real temperature in F
   double tempC=convertFtoC(tempF);
-  char humid[3]="";
-  sprintf(humid,"%02x",h);
-  int humidint=atoi(humid);
-  char address[3]="";
-  sprintf(address,"%02x",addr);
-  byte chan=byte(datagram[39])+byte(datagram[38])*2;
+  char address[3]=""; // sensor address gets reset every battery change
+  sprintf(address,"%02x",databytes[0]); // sensor address HEX representation
   #if DEBUG || DEBUG433
   Serial.println();
-  Serial.print("addr:"); Serial.print(addr,HEX);
-  Serial.print(" ch:"); Serial.print(chan,BIN);
+  Serial.print("addr:"); Serial.print(address);
+  Serial.print(" ch:"); Serial.print(channel);
   Serial.print(" tempF:"); Serial.print(tempF);
   Serial.print(" tempC:"); Serial.print(tempC);
-  Serial.print(" humid:"); Serial.print(humidint,DEC);
-  Serial.print(" batt:");Serial.println(datagram[13]);
+  Serial.print(" humid:"); Serial.print(humidity);
+  Serial.print(" batt:");Serial.println(battery_low);
   #endif
+  if (!(databytes[4] & 0x0F)) { // check for packet validity
+    #if DEBUG
+    Serial.println ("Invalid packet received.");
+    digitalWrite(LEDPIN,HIGH); //DEBUG: turn off led when datagram is sent
+    #endif
+    return;
+  }
+  if (!infactory_crc_check(databytes)) { // perform CRC check
+    #if DEBUG
+    Serial.println ("Invalid packet CRC.");
+    digitalWrite(LEDPIN,HIGH); //DEBUG: turn off led when datagram is sent
+    #endif
+    return;
+  }
   StaticJsonDocument<128> json; //create JSON buffer to send MQTT message
   json["SensorAddress"]=address;
-  json["Channel"]=chan;
+  json["Channel"]=channel;
   json["TemperatureF"]=tempF;
   json["TemperatureC"]=tempC;
-  json["Humidity"]=humidint;
-  json["BatteryLow"]=datagram[13];
+  json["Humidity"]=humidity;
+  json["BatteryLow"]=battery_low;
   serializeJson(json, msg); //convert JSON object to char array
   if (strcmp(msg,oldmsg)!=0 || lastmsgtime>6000){ //not the same message as before and not received within 6 sec
     #if DEBUG
@@ -449,18 +488,18 @@ void handleWebConfig() {
   webserver.send(200, "text/html", response);
 }
 
-/* void handleWebGetparams() {
-  #if DEBUG
-  Serial.println("Web GET request /getparams");
-  #endif
-  if (!webserver.authenticate(admin_username, admin_pass)) { //check for authentication
-    return webserver.requestAuthentication(); // request authentication
-  }
-  char response[267];
-  sprintf(response, "{\"hostname\":\"%s\",\"admin_pass\":\"%s\",\"mqtt_server\":\"%s\",\"mqtt_port\":\"%s\";\"mqtt_topic\":\"%s\"}",
-  hostname,admin_pass,mqtt_server,mqtt_port,mqtt_topic);
-  webserver.send(200, "application/json", response);
-} */
+// void handleWebGetparams() {
+//   #if DEBUG
+//   Serial.println("Web GET request /getparams");
+//   #endif
+//   if (!webserver.authenticate(admin_username, admin_pass)) { //check for authentication
+//     return webserver.requestAuthentication(); // request authentication
+//   }
+//   char response[267];
+//   sprintf(response, "{\"hostname\":\"%s\",\"admin_pass\":\"%s\",\"mqtt_server\":\"%s\",\"mqtt_port\":\"%s\";\"mqtt_topic\":\"%s\"}",
+//   hostname,admin_pass,mqtt_server,mqtt_port,mqtt_topic);
+//   webserver.send(200, "application/json", response);
+// }
 
 void handleWebSave() {
   #if DEBUG
