@@ -17,7 +17,7 @@
 #define LEDPIN D4     //embedded led internal pin 2. pulled up internally
 #define RESETPIN D7  //reset settings button. internal pin 13
 
-#define DEBUG true      //enable debugging
+//#define DEBUG true      //enable debugging
 //#define DEBUG433 true   //enable debugging for RF signal
 
 #include <LittleFS.h>             //LittleFS support (replaces SPIFFS)
@@ -186,9 +186,6 @@ void mqttConnect() {  //mqtt server connection function. Will re-try every 5 sec
 }
 
 void sendDatagram(){
-  #if DEBUG || DEBUG433
-  digitalWrite(LEDPIN,LOW); //DEBUG: turn on led until datagram is sent to mqtt
-  #endif
   char msg[128]=""; //mqtt message json
   static char oldmsg[128]="z"; //previous mqtt message json
   static uint32_t lasttime=0; //last millis time message received
@@ -222,17 +219,16 @@ void sendDatagram(){
   if (!(databytes[4] & 0x0F)) { // check for packet validity
     #if DEBUG
     Serial.println ("Invalid packet received.");
-    digitalWrite(LEDPIN,HIGH); //DEBUG: turn off led when datagram is sent
     #endif
     return;
   }
   if (!infactory_crc_check(databytes)) { // perform CRC check
     #if DEBUG
     Serial.println ("Invalid packet CRC.");
-    digitalWrite(LEDPIN,HIGH); //DEBUG: turn off led when datagram is sent
     #endif
     return;
   }
+  digitalWrite(LEDPIN,LOW); //turn on led to indicate that valid packet is received
   StaticJsonDocument<128> json; //create JSON buffer to send MQTT message
   json["SensorAddress"]=address;
   json["Channel"]=channel;
@@ -263,10 +259,7 @@ void sendDatagram(){
     #endif
   }
   strcpy(oldmsg,msg); // copy message to old message
-
-  #if DEBUG || DEBUG433
-  digitalWrite(LEDPIN,HIGH); //DEBUG: turn off led when datagram is sent
-  #endif
+  digitalWrite(LEDPIN,HIGH); // turn off led when datagram is sent
 }
 
 IRAM_ATTR void interruptHandler() {
