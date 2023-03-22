@@ -27,6 +27,7 @@ This is the PlatformIO project but code base is Arduino compatible.
 - 12 bits of temperature are coded in Fahrenheit degrees multiplied by 10 and added constant of 900 to eliminate negative values
 - Humidity is encoded as two 4-bit BCD digits.
 - Battery status (B) is 1 bit, meaning if battery needs replacement or not
+
 ## Software features
 - WiFiManager - the library that allows configuration of Wifi and other settings on first start or if settings reset button was pressed during power-on
 - mDNS - allows the sensor to appear in your network as web server with name set in Autoconnect interface
@@ -35,3 +36,6 @@ This is the PlatformIO project but code base is Arduino compatible.
 - PubSubClient - sends the received sensor data to configured MQTT broker
 - Messages are filtered to prevent repeating 6 times, only one message is sent if it is the same message as before
 - Admin username is "admin" and default password is "p4ssw0rd". Password can be changed in both: wifiAP mode and web interface.
+
+#### Sample message that is sent to the MQTT broker:
+    {"SensorAddress":"04","Channel":3,"TemperatureF":18.9,"TemperatureC":-7.3,"Humidity":76,"BatteryLow":0}

@@ -531,7 +531,7 @@ void handleWebSave() {
 
 void setup() {
   #if DEBUG || DEBUG433
-  Serial.begin(1000000); //using maxumum available speed of uart to reduce delay in the interrupt routines.
+  Serial.begin(115200); //using maxumum available speed of uart to reduce delay in the interrupt routines.
   Serial.println("\nStarted\n");
   #endif
   pinMode(LEDPIN,OUTPUT); //enable builtin led
@@ -578,6 +578,7 @@ void setup() {
   Serial.println("Starting OTA server");
   #endif
   ArduinoOTA.setHostname(hostname); //set OTA host name
+  ArduinoOTA.setPassword(admin_pass); // set OTA password
   ArduinoOTA.begin(); // begin OTA routines
   
   /////////////////////////////// mDNS server
